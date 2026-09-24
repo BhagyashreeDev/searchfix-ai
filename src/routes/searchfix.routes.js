@@ -1,52 +1,28 @@
-import express from "express";
-import { analyzeSearchFix } from "../services/gemini.service.js";
+import { Router } from "express";
+import multer from "multer";
+import os from "os";
+import { analyzeSearchFix, analyzeFullOrder } from "../controllers/searchfix.controller.js";
 
-const router = express.Router();
+const router = Router();
 
-
-router.post("/analyze", async (req, res) => {
-
-    try {
-
-        const order = req.body;
-
-
-        if (!order) {
-            return res.status(400).json({
-                error: "Request body is required."
-            });
-        }
-
-
-        if (!order.orderNumber) {
-            return res.status(400).json({
-                error: "orderNumber is required."
-            });
-        }
-
-
-        if (!Array.isArray(order.comments)) {
-            return res.status(400).json({
-                error: "comments must be an array."
-            });
-        }
-
-
-        const result = await analyzeSearchFix(order);
-
-
-        res.json(result);
-
-    } catch (error) {
-
-        console.error(error);
-
-        res.status(500).json({
-            error: "SearchFix analysis failed.",
-            message: error.message
-        });
+// Configure temporary disk storage for incoming PDF uploads
+const upload = multer({
+    dest: os.tmpdir(),
+    limits: {
+        fileSize: 20 * 1024 * 1024 // 20 MB max file size
     }
 });
 
+/**
+ * POST /api/searchfix/analyze
+ * Full Phase 2 API: Accepts Order JSON + Uploaded PDF files -> Returns Issue Classification, Evidence, and Decision.
+ */
+router.post("/analyze", upload.any(), analyzeFullOrder);
+
+/**
+ * POST /api/searchfix/analyze-comments
+ * Backwards-Compatible Phase 1 API: Accepts Order JSON + Comments -> Returns Issue Classification & Required Document List.
+ */
+router.post("/analyze-comments", analyzeSearchFix);
 
 export default router;

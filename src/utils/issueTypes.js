@@ -1,36 +1,6 @@
-export const ISSUE_TYPES = [
-    "MISSING_DEED",
-    "CHAIN_BREAK",
-    "PARCEL_MISMATCH",
-    "LEGAL_DESCRIPTION_MISMATCH",
-    "TYPING_ERROR",
-    "TAX_DISCREPANCY",
-    "LIEN_DISCREPANCY",
-    "COURT_DISCREPANCY",
-    "BANKRUPTCY_DISCREPANCY",
-    "VESTING_DISCREPANCY",
-    "DEED_DISCREPANCY",
-    "NAME_SEARCH_MISSING",
-    "SEARCH_DEPTH",
-    "MISSING_DOCUMENT",
-    "WAITING_FOR_CLIENT",
-    "WAITING_FOR_FEE_APPROVAL",
-    "WAITING_FOR_COPIES",
-    "OTHER"
-];
+import { ISSUE_TYPES } from "../config/issueTypes.js";
+import { DOCUMENT_TYPES, DOCUMENT_MAPPINGS } from "../config/documentMappings.js";
 
-
-export const FILE_TYPES = [
-    "SEARCH_PACKAGE",
-    "DEED",
-    "DOT",
-    "TAX",
-    "PA",
-    "LEGAL_DESCRIPTION",
-    "MAP",
-    "LIEN",
-    "PACER",
-    "PATRIOT",
-    "TYPED_REPORT",
-    "COST_WORKSHEET"
-];
+export { ISSUE_TYPES };
+export const FILE_TYPES = DOCUMENT_TYPES;
+export const ISSUE_DOCUMENT_GUIDANCE = DOCUMENT_MAPPINGS;
