@@ -1,11 +1,23 @@
 /**
- * Configurable User Classification Rules for SearchFix AI (Phase 2).
- * Categorizes comment authors into INTERNAL, CLIENT, or SYSTEM roles.
+ * Configurable User Classification Rules for SearchFix AI.
+ * Categorizes comment authors into INTERNAL, CLIENT, or SYSTEM roles based on 22-Sep dataset patterns.
  */
 
 export const USER_CONFIG = {
     internalPatterns: [
         "_ADSSearchType",
+        "ADSSearchType",
+        "KishoreK",
+        "RaghuP",
+        "AshokaA",
+        "HarryS",
+        "GurumurthyM",
+        "NagendraK",
+        "SukruthiS",
+        "AnushreeU",
+        "SuriyakumarS",
+        "DhanushG",
+        "ArchanaG",
         "Searcher",
         "QC"
     ],
@@ -15,6 +27,8 @@ export const USER_CONFIG = {
     systemPatterns: [
         "OWLServiceUser",
         "AUTO_PLUser",
+        "TV Auto Suspend",
+        "User Logged off system",
         "SYSTEM"
     ]
 };
@@ -49,6 +63,5 @@ export function classifyUserRole(author) {
         return "SYSTEM";
     }
 
-    // If author has an underscore (e.g., GanneIS_FAI, Pjayaram_FAI), check if client or internal
     return "CLIENT";
 }

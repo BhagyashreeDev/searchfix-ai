@@ -5,13 +5,16 @@ import { documentSelectionService } from "../services/documentSelection.service.
 import { documentAnalysisService } from "../services/documentAnalysis.service.js";
 import { evidenceService } from "../services/evidence.service.js";
 import { decisionEngine } from "../services/decision.service.js";
+import { SearchFixStep1ResultSchema, SearchFixStep2ResultSchema } from "../schemas/result.schema.js";
 import { geminiService } from "../services/gemini.service.js";
-import { SearchFixPhase2ResultSchema } from "../schemas/result.schema.js";
 
 /**
- * Legacy / Phase 1 Endpoint: Analyze comments only.
+ * STEP 1 ENDPOINT CONTROLLER:
+ * Receives order comments from Chrome Extension, executes the Internal vs Client decision tree.
+ * - If Internal User Status Update -> returns DISPUTED immediately.
+ * - If Client Complaint -> returns required document list with status: "AWAITING_DOCUMENTS".
  */
-export async function analyzeSearchFix(req, res) {
+export async function analyzeCommentsController(req, res) {
     try {
         const { orderNumber, comments } = req.body || {};
 
@@ -20,27 +23,110 @@ export async function analyzeSearchFix(req, res) {
         }
 
         if (!comments || !Array.isArray(comments) || comments.length === 0) {
-            return res.status(400).json({ error: "comments must be a non-empty array." });
+            return res.status(400).json({ error: "comments array must contain at least one comment." });
         }
 
-        const result = await geminiService.analyzeComments(orderNumber.trim(), comments);
-        return res.status(200).json(result);
+        const cleanOrderNumber = orderNumber.trim();
+        console.log(`[SearchFix Step 1] Analyzing comments for Order ${cleanOrderNumber} (${comments.length} comments)`);
+
+        // 1. Comment Selection & Timeline Traversal
+        const { selectedComment, contextCommentsUsed, isInternalStatusExplanation } = commentSelectionService.selectSearchFixComment(comments);
+
+        const analysisId = `SF-${cleanOrderNumber}-${Date.now()}`;
+
+        // CASE 1A: Internal User Valid Comment explaining status (e.g. "ETA added... requested abstractor to re-check")
+        if (isInternalStatusExplanation) {
+            console.log(`[SearchFix Step 1] Order ${cleanOrderNumber}: Selected internal user comment (${selectedComment.author}). Returning DISPUTED.`);
+            
+            return res.status(200).json({
+                analysisId,
+                orderNumber: cleanOrderNumber,
+                commentAnalysis: {
+                    selectedComment: {
+                        date: selectedComment.date,
+                        time: selectedComment.time,
+                        author: selectedComment.author,
+                        role: selectedComment.role,
+                        text: selectedComment.text
+                    },
+                    contextCommentsUsed: contextCommentsUsed.map(c => ({
+                        date: c.date,
+                        time: c.time,
+                        author: c.author,
+                        role: c.role,
+                        text: c.text,
+                        purpose: c.purpose
+                    }))
+                },
+                issues: [],
+                overallDecision: "DISPUTED",
+                reason: `Internal company comment by ${selectedComment.author} ("${selectedComment.text}") confirms order is actively being handled. No unaddressed client error detected.`,
+                status: "DISPUTED"
+            });
+        }
+
+        // CASE 2C: Client Complaint Comment
+        // 2. Issue Classification
+        const rawIssues = await issueClassificationService.classifyIssues(selectedComment, contextCommentsUsed);
+
+        // 3. Rule-Based Document Selection
+        const issuesWithDocs = documentSelectionService.selectRequiredDocuments(rawIssues);
+
+        const formattedIssues = issuesWithDocs.map(issue => ({
+            issueType: issue.issueType,
+            claim: issue.claim,
+            requiredFiles: issue.requiredDocuments.map(docType => ({
+                fileType: docType,
+                reason: `Required to investigate ${issue.issueType.toLowerCase().replace(/_/g, " ")} claim.`
+            }))
+        }));
+
+        const step1Payload = {
+            analysisId,
+            orderNumber: cleanOrderNumber,
+            commentAnalysis: {
+                selectedComment: {
+                    date: selectedComment.date,
+                    time: selectedComment.time,
+                    author: selectedComment.author,
+                    role: selectedComment.role,
+                    text: selectedComment.text
+                },
+                contextCommentsUsed: contextCommentsUsed.map(c => ({
+                    date: c.date,
+                    time: c.time,
+                    author: c.author,
+                    role: c.role,
+                    text: c.text,
+                    purpose: c.purpose
+                }))
+            },
+            issues: formattedIssues,
+            status: "AWAITING_DOCUMENTS"
+        };
+
+        const validatedResult = SearchFixStep1ResultSchema.parse(step1Payload);
+
+        console.log(`[SearchFix Step 1] Complete for Order ${cleanOrderNumber}: ${validatedResult.issues.length} client issue(s) identified.`);
+        return res.status(200).json(validatedResult);
 
     } catch (error) {
-        console.error("[SearchFix Controller] Phase 1 Analysis failed:", error);
-        return res.status(500).json({ error: "SearchFix analysis failed." });
+        console.error("[SearchFix Controller] Step 1 analysis failed:", error);
+        return res.status(500).json({ error: "SearchFix comment analysis failed." });
     }
 }
 
 /**
- * Full Phase 2 Endpoint: Analyze comments + uploaded PDF documents -> evidence & decision.
+ * STEP 2 ENDPOINT CONTROLLER:
+ * Receives uploaded PDF files downloaded by Chrome Extension, extracts evidence, compares claim vs evidence,
+ * and returns ACCEPTED, DISPUTED, or REVIEW_REQUIRED decisions.
  */
-export async function analyzeFullOrder(req, res) {
+export async function analyzeDocumentsController(req, res) {
     const uploadedLocalPaths = [];
 
     try {
-        // Parse orderData if passed as JSON string in multipart/form-data
         let bodyData = req.body;
+
         if (typeof req.body.orderData === "string") {
             try {
                 bodyData = JSON.parse(req.body.orderData);
@@ -51,6 +137,7 @@ export async function analyzeFullOrder(req, res) {
 
         const orderNumber = bodyData.orderNumber || req.body.orderNumber;
         const comments = bodyData.comments || req.body.comments;
+        const analysisId = bodyData.analysisId || req.body.analysisId;
 
         if (!orderNumber || typeof orderNumber !== "string" || orderNumber.trim() === "") {
             return res.status(400).json({ error: "orderNumber is required." });
@@ -60,13 +147,11 @@ export async function analyzeFullOrder(req, res) {
             return res.status(400).json({ error: "comments array must contain at least one comment." });
         }
 
-        // Process uploaded PDF files from multer
         const uploadedFiles = [];
         if (req.files && Array.isArray(req.files)) {
             for (const file of req.files) {
                 uploadedLocalPaths.push(file.path);
 
-                // Determine fileType from req.body mapping or metadata header
                 let fileType = "SEARCH_PACKAGE";
                 if (req.body[`fileType_${file.fieldname}`]) {
                     fileType = req.body[`fileType_${file.fieldname}`];
@@ -82,20 +167,49 @@ export async function analyzeFullOrder(req, res) {
                     fileType = "TYPED_REPORT";
                 } else if (file.originalname.toUpperCase().includes("THR")) {
                     fileType = "THR";
+                } else if (file.originalname.toUpperCase().includes("DOT")) {
+                    fileType = "DOT";
                 }
 
                 uploadedFiles.push({
                     fileName: file.originalname,
-                    fileType: fileType,
+                    fileType,
                     path: file.path
                 });
             }
         }
 
-        console.log(`[SearchFix Controller] Starting Phase 2 analysis for Order ${orderNumber} (${uploadedFiles.length} uploaded files attached)`);
+        const cleanOrderNumber = orderNumber.trim();
+        console.log(`[SearchFix Step 2] Analyzing PDF evidence for Order ${cleanOrderNumber} (${uploadedFiles.length} files attached)`);
 
         // Stage 1: Comment Selection & Timeline Traversal
-        const { selectedComment, contextCommentsUsed } = commentSelectionService.selectSearchFixComment(comments);
+        const { selectedComment, contextCommentsUsed, isInternalStatusExplanation } = commentSelectionService.selectSearchFixComment(comments);
+
+        if (isInternalStatusExplanation) {
+            return res.status(200).json({
+                analysisId: analysisId || `SF-${cleanOrderNumber}-${Date.now()}`,
+                orderNumber: cleanOrderNumber,
+                commentAnalysis: {
+                    selectedComment: {
+                        date: selectedComment.date,
+                        time: selectedComment.time,
+                        author: selectedComment.author,
+                        role: selectedComment.role,
+                        text: selectedComment.text
+                    },
+                    contextCommentsUsed: contextCommentsUsed.map(c => ({
+                        date: c.date,
+                        time: c.time,
+                        author: c.author,
+                        role: c.role,
+                        text: c.text,
+                        purpose: c.purpose
+                    }))
+                },
+                issues: [],
+                overallDecision: "DISPUTED"
+            });
+        }
 
         // Stage 2: Issue Classification
         const rawIssues = await issueClassificationService.classifyIssues(selectedComment, contextCommentsUsed);
@@ -103,17 +217,12 @@ export async function analyzeFullOrder(req, res) {
         // Stage 3: Document Selection Mapping
         const issuesWithDocs = documentSelectionService.selectRequiredDocuments(rawIssues);
 
-        // Stage 4, 5, 6: Document Analysis, Evidence Extraction & Issue Decision Evaluation
+        // Stage 4-6: PDF Document Analysis, Evidence Extraction & Decision Engine
         const processedIssues = [];
 
         for (const issue of issuesWithDocs) {
-            // Stage 4: Analyze target PDF documents
             const rawEvidence = await documentAnalysisService.analyzeDocumentsForIssue(issue, uploadedFiles);
-
-            // Stage 5: Format evidence
             const formattedEvidence = evidenceService.formatEvidence(rawEvidence);
-
-            // Stage 6: Evaluate claim vs evidence decision
             const { decision, reason } = await decisionEngine.evaluateIssueDecision(issue, formattedEvidence);
 
             processedIssues.push({
@@ -126,11 +235,12 @@ export async function analyzeFullOrder(req, res) {
             });
         }
 
-        // Stage 7: Calculate overall decision
+        // Stage 7: Overall Decision Aggregation
         const overallDecision = decisionEngine.calculateOverallDecision(processedIssues);
 
-        const responsePayload = {
-            orderNumber: orderNumber.trim(),
+        const step2Payload = {
+            analysisId: analysisId || `SF-${cleanOrderNumber}-${Date.now()}`,
+            orderNumber: cleanOrderNumber,
             commentAnalysis: {
                 selectedComment: {
                     date: selectedComment.date,
@@ -152,22 +262,15 @@ export async function analyzeFullOrder(req, res) {
             overallDecision
         };
 
-        console.log("Uploaded file:", {
-            originalname: file.originalname,
-            mimetype: file.mimetype,
-            path: file.path
-        });
+        const validatedResult = SearchFixStep2ResultSchema.parse(step2Payload);
 
-        // Validate output payload structure
-        const validatedPayload = SearchFixPhase2ResultSchema.parse(responsePayload);
-
-        return res.status(200).json(validatedPayload);
+        console.log(`[SearchFix Step 2] Complete for Order ${cleanOrderNumber}. Overall Decision: ${overallDecision}`);
+        return res.status(200).json(validatedResult);
 
     } catch (error) {
-        console.error("[SearchFix Controller] Phase 2 Analysis failed:", error);
-        return res.status(500).json({ error: "SearchFix Phase 2 analysis failed." });
+        console.error("[SearchFix Controller] Step 2 document analysis failed:", error);
+        return res.status(500).json({ error: "SearchFix document analysis failed." });
     } finally {
-        // Clean up temporary local files saved by multer
         for (const localPath of uploadedLocalPaths) {
             try {
                 if (fs.existsSync(localPath)) {
@@ -178,4 +281,21 @@ export async function analyzeFullOrder(req, res) {
             }
         }
     }
+}
+
+/**
+ * Legacy / Phase 1 compatibility wrapper
+ */
+export async function analyzeSearchFix(req, res) {
+    return analyzeCommentsController(req, res);
+}
+
+/**
+ * Unified Controller Endpoint
+ */
+export async function analyzeFullOrder(req, res) {
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+        return analyzeDocumentsController(req, res);
+    }
+    return analyzeCommentsController(req, res);
 }

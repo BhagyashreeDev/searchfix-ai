@@ -32,11 +32,9 @@ export class GeminiService {
      */
     async uploadFile(filePath, mimeType = "application/pdf") {
         console.log(`[GeminiService] Uploading file to Gemini Files API: ${filePath}`);
-        const uploadResult = await this.ai.files.upload({
+        const uploadResult = await this.ai.files.uploadFile({
             file: filePath,
-            config: {
-                mimeType
-            }
+            mimeType
         });
         console.log(`[GeminiService] Upload complete. File URI: ${uploadResult.uri}`);
         return uploadResult;
@@ -49,7 +47,7 @@ export class GeminiService {
         if (!fileName) return;
         try {
             console.log(`[GeminiService] Deleting file from Gemini Files API: ${fileName}`);
-            await this.ai.files.delete({ name: fileName });
+            await this.ai.files.deleteFile({ name: fileName });
         } catch (err) {
             console.warn(`[GeminiService] File deletion warning (${fileName}):`, err.message);
         }
@@ -60,7 +58,7 @@ export class GeminiService {
      */
     async generateContentWithFiles(systemInstruction, userPrompt, fileObjects = []) {
         const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-
+        
         // Combine file handles and text prompt into contents array
         const contents = [...fileObjects, userPrompt];
 

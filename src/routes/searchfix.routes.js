@@ -1,11 +1,10 @@
 import { Router } from "express";
 import multer from "multer";
 import os from "os";
-import { analyzeSearchFix, analyzeFullOrder } from "../controllers/searchfix.controller.js";
+import { analyzeCommentsController, analyzeDocumentsController, analyzeFullOrder } from "../controllers/searchfix.controller.js";
 
 const router = Router();
 
-// Configure temporary disk storage for incoming PDF uploads
 const upload = multer({
     dest: os.tmpdir(),
     limits: {
@@ -14,15 +13,26 @@ const upload = multer({
 });
 
 /**
- * POST /api/searchfix/analyze
- * Full Phase 2 API: Accepts Order JSON + Uploaded PDF files -> Returns Issue Classification, Evidence, and Decision.
+ * STEP 1 ENDPOINT:
+ * POST /api/searchfix/analyze-comments
+ * Receives order comments from Chrome Extension (JSON body).
+ * Returns issue classification, required document types, and status: "AWAITING_DOCUMENTS".
  */
-router.post("/analyze", upload.any(), analyzeFullOrder);
+router.post("/analyze-comments", analyzeCommentsController);
 
 /**
- * POST /api/searchfix/analyze-comments
- * Backwards-Compatible Phase 1 API: Accepts Order JSON + Comments -> Returns Issue Classification & Required Document List.
+ * STEP 2 ENDPOINT:
+ * POST /api/searchfix/analyze-documents
+ * Receives uploaded PDF files downloaded by Chrome Extension (multipart/form-data).
+ * Analyzes PDFs via Gemini Files API, extracts evidence, and returns ACCEPTED / DISPUTED / REVIEW_REQUIRED decision.
  */
-router.post("/analyze-comments", analyzeSearchFix);
+router.post("/analyze-documents", upload.any(), analyzeDocumentsController);
+
+/**
+ * UNIFIED ENDPOINT:
+ * POST /api/searchfix/analyze
+ * Supports both Step 1 (JSON) and Step 2 (multipart upload) dynamically.
+ */
+router.post("/analyze", upload.any(), analyzeFullOrder);
 
 export default router;
